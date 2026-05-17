@@ -1,0 +1,511 @@
+================================================================================
+MÔ HÌNH TOÁN HỌC - HỆ THỐNG TỐI ƯU LỊC TRỰC CÓI THI
+================================================================================
+
+1. MÔ TẢ BÀI TOÁN
+================================================================================
+Bài toán tìm phương án phân công cán bộ để trực coi thi tối ưu, sao cho:
+- Mỗi ca thi có ĐÚNG số cán bộ cần thiết (hard constraint)
+- Phân công công bằng giữa các cán bộ (mục tiêu: minimize độ lệch khỏi trung bình)
+- Ưu tiên yếu tố mềm: khoảng cách, giới tính, tuổi (minimize chi phí)
+
+Dữ liệu đầu vào:
+- n_staff: số cán bộ (e.g., 73) với thông tin: giới tính, tuổi, khoảng cách đến 2 cơ sở
+- n_shift: số ca thi (e.g., 65) với yêu cầu: ngày, giờ, cơ sở, số cán bộ cần thiết (d[ca])
+- Tổng số chỉ tiêu: N = ∑ d[ca] (e.g., 362 cán bộ x ca)
+- Trung bình ca/cán bộ: μ = N / n_staff (e.g., 5.57)
+
+
+2. FORMULATION TOÁN HỌC
+================================================================================
+
+2.1 BIẾN QUYẾT ĐỊNH (Decision Variables)
+--------
+x[cb][ca] ∈ {0, 1}  ∀ cb ∈ {1..n_staff}, ca ∈ {1..n_shift}
+
+  x[cb][ca] = 1  ⟺  cán bộ 'cb' được phân công trực ca 'ca'
+  x[cb][ca] = 0  ⟺  ngược lại
+
+Số biến: n_staff × n_shift (e.g., 73 × 65 = 4,745 biến nhị phân)
+
+
+Biến phụ (slack variables cho fairness):
+over[cb] ≥ 0   : lượng shifts vượt quá trung bình cho cán bộ cb
+under[cb] ≥ 0  : lượng shifts dưới trung bình cho cán bộ cb
+
+
+2.2 RÀNG BUỘC CHẶT (Hard Constraints - Bắt buộc)
+--------
+
+HC1: Số cán bộ chính xác trên mỗi ca
+     ∑ x[cb][ca] = d[ca]  ∀ ca ∈ Shifts
+     cb
+
+     Ý nghĩa: Tổng số cán bộ gán cho ca 'ca' phải bằng ĐÚNG yêu cầu d[ca]
+
+
+HC2: Fairness - Mỗi cán bộ tối thiểu 1 ca
+     ∑ x[cb][ca] ≥ 1  ∀ cb ∈ Staff
+     ca
+
+     Ý nghĩa: Không cho phép cán bộ nào không được trực
+
+
+HC3: Độ lệch fairness (linearization)
+     ∑ x[cb][ca] - μ ≤ over[cb]   ∀ cb ∈ Staff
+     ca
+     
+     μ - ∑ x[cb][ca] ≤ under[cb]  ∀ cb ∈ Staff
+     ca
+
+     Ý nghĩa: Xác định độ lệch dương/âm so với trung bình
+
+
+2.3 HÀM MỤC TIÊU (Objective Function - Tối ưu)
+--------
+
+Minimize: Z = Z_fairness + Z_distance + Z_gender + Z_age + Z_overlap
+
+a) CHI PHÍ FAIRNESS (cân bằng tải công việc):
+   Z_fairness = ∑ w_fairness × (over[cb] + under[cb])
+                cb
+   
+   w_fairness = FAIRNESS_WEIGHT (e.g., 2000.0)
+   
+   Ý nghĩa: Phạt độ lệch lớn khỏi trung bình
+            - Cán bộ có nhiều ca vượt quá μ sẽ bị phạt
+            - Cán bộ có ít ca dưới μ sẽ bị phạt
+            - Tổng độ lệch tuyệt đối được minimized
+
+
+b) CHI PHÍ KHOẢNG CÁCH (ưu tiên gần):
+   Z_distance = ∑∑ w_distance × dist[cb][ca] × x[cb][ca]
+                cb ca
+   
+   dist[cb][ca] = khoảng cách từ cán bộ cb đến cơ sở của ca ca (km)
+   w_distance = DISTANCE_WEIGHT (e.g., 300.0)
+   
+   Ý nghĩa: Giảm thiểu tổng khoảng cách di chuyển
+            - Ưu tiên cán bộ ở gần cơ sở thi
+
+
+c) CHI PHÍ GIỚI TÍNH (giảm tải nữ):
+   Z_gender = ∑∑ w_gender × I_female[cb] × x[cb][ca]
+              cb ca
+   
+   I_female[cb] = 1  nếu cán bộ cb là nữ
+                = 0  nếu nam
+   w_gender = GENDER_WEIGHT (e.g., 100.0)
+   
+   Ý nghĩa: Giảm số ca trực của cán bộ nữ
+
+
+d) CHI PHÍ TUỔI (giảm tải cao tuổi):
+   Z_age = ∑∑ w_age × penalty_age[cb] × x[cb][ca]
+           cb ca
+   
+   penalty_age[cb] = (Age[cb] - 50) / 10 × 10  nếu Age[cb] ≥ 55
+                   = 0                           nếu Age[cb] < 55
+   w_age = AGE_WEIGHT (e.g., 200.0)
+   
+   Ý nghĩa: Phạt cán bộ từ 55 tuổi trở lên
+            - Cán bộ 60 tuổi bị phạt (60-50)/10 = 1.0 per shift
+            - Cán bộ 65 tuổi bị phạt (65-50)/10 = 1.5 per shift
+
+
+e) CHI PHÍ TRÙNG LẶP CA TRỰC (tránh trùng ngày-cơ sở):
+   Z_overlap = ∑ w_overlap × ∑ (count_i - 1)
+               cb        i∈D,F
+   
+   count_i = số lần cán bộ cb trực vào ngày D tại cơ sở F
+   
+   Công thức tính penalty:
+   - Lần 1: penalty = 0
+   - Lần 2: penalty = 1 (count - 1)
+   - Lần 3: penalty = 2 (count - 1)
+   - Lần k: penalty = k - 1 (count - 1)
+   
+   w_overlap = OVERLAP_WEIGHT (e.g., 500.0)
+   
+   Ý nghĩa: Tránh cán bộ phải trực nhiều ca cùng ngày tại cùng cơ sở
+            - Lần đầu tiên không bị phạt
+            - Từ lần thứ 2 trở lên bị phạt tăng dần
+            - Trích xuất ngày từ MS_ca (format YYYYMMDD_X)
+
+
+HÀM TỔNG:
+   min Z = 2000×∑(over[cb]+under[cb]) 
+             cb
+           + 300×∑∑ dist[cb][ca]×x[cb][ca]
+             cb ca
+           + 100×∑∑ I_female[cb]×x[cb][ca]
+             cb ca
+           + 200×∑∑ penalty_age[cb]×x[cb][ca]
+             cb ca
+           + 500×∑ penalty_overlap[cb]
+             cb
+
+
+3. LOẠI MÔ HÌNH
+================================================================================
+Loại: Mixed Integer Linear Programming (MILP)
+  - Biến quyết định chính: x[cb][ca] nhị phân (0/1)
+  - Biến phụ: over/under liên tục không âm
+  - Ràng buộc: tuyến tính
+  - Hàm mục tiêu: tuyến tính
+
+
+4. PHƯƠNG PHÁP GIẢI
+================================================================================
+Solver: CBC (Coin-or branch and cut) via PuLP
+  - Thuật toán: Branch-and-bound + cutting planes
+  - Timeout: có thể đặt (e.g., 60 giây)
+  - Status: Optimal, Feasible, atau Infeasible
+
+
+5. NHỮNG KHÓ KHĂN VÀ GIỚI HẠN
+================================================================================
+
+5.1 XUNG ĐỘT MỤC TIÊU (Objective Conflict)
+---------
+Các mục tiêu có thể xung đột:
+
+A. Fairness vs. Distance/Age/Gender
+   - Fairness (weight 2000) là mục tiêu chi phối
+   - Nếu w_fairness quá lớn → độ lệch được minimize tốt nhưng:
+     * Distance/Age/Gender bị "đè", không còn tác động
+     * Có thể tất cả staff có 5-6 ca (do fairness)
+     * Nhưng các cán bộ nữ, cao tuổi không được giảm tải
+   
+   Ví dụ: 
+   - n_staff=73, tổng shifts=362 → μ ≈ 5.96
+   - Nếu w_fairness=2000, w_distance=300
+   - Để distance tác động, cần w_distance ≈ 2000-3000 (tương xứng với fairness)
+
+B. Distance vs. Gender/Age
+   - Distance là hàm liên tục (0-30+ km)
+   - Gender/Age là hàm rời rạc (boolean/threshold)
+   - Distance dễ dominate ngành hàng ngoài tương xứng
+
+
+5.2 CÂN BẰNG TRỌNG SỐ (Weight Tuning)
+---------
+Thách thức: Tìm bộ trọng số (w_fairness, w_distance, w_gender, w_age) 
+sao cho tất cả mục tiêu được thỏa mãn đồng thời
+
+Vấn đề:
+- Không có cách tự động tìm trọng số tối ưu
+- Phải điều chỉnh thủ công dựa vào kết quả output
+- Các trọng số không độc lập → thay đổi một cái ảnh hưởng đến kết quả toàn bộ
+
+Hướng dẫn thực tế:
+  1. w_fairness phải lớn để đảm bảo cân bằng tải cơ bản
+  2. w_distance nên = 0.5-1.5 × w_fairness để vẫn có tác động
+  3. w_gender nên = 0.1-0.5 × w_fairness (gender là yếu tố phụ)
+  4. w_age nên = 0.2-0.8 × w_fairness (cấp độ ưu tiên giữa gender và distance)
+
+Ví dụ hiệu chỉnh:
+  - Hiện tại: fairness=2000, distance=300, gender=100, age=200
+  - distance=300 quá bé so với fairness=2000
+  - → Để distance tác động: tăng lên 1500-2000
+
+
+5.3 KHÍA CẠNH CÔNG BẰNG (Fairness Nuance)
+---------
+Fairness hiện tại là "deviation penalty" (tổng độ lệch tuyệt đối):
+  - Mục tiêu: minimize ∑|shifts[cb] - μ|
+  - Tính chất: "egalitarian" (ưu tiên bảo đảm ai cũng gần μ)
+
+Nhưng không:
+  - Đảm bảo shifts[cb] ≤ μ + ε với ε nhỏ
+  - Ngăn chặn một vài cán bộ bị "quá tải" (e.g., 10 ca khi avg=5.96)
+  - Đảm bảo max - min nhỏ
+
+Nếu muốn fairness mạnh hơn:
+  - Thêm hard constraint: x[cb] ≤ ceiling(μ) + 1
+  - Hoặc tính toán variance thay vì absolute deviation
+  - Hoặc maximize min_shifts (maximin strategy)
+
+
+5.4 TÍNH KHẢ THI (Feasibility)
+---------
+Nếu tổng d[ca] < n_staff × min_shifts_desired, bài toán có thể:
+  - Feasible: nhưng một vài cán bộ chỉ được 1 ca
+  - Infeasible: nếu ràng buộc HC2 (x[cb] ≥ 1) mâu thuẫn với HC1
+
+Ví dụ:
+  - n_staff = 73, n_shift = 65, d[ca] = 5 (trung bình)
+  - Tổng = 325 < 73 → một vài staff không được gán
+  - Nếu bắt buộc mỗi staff ≥ 1, tổng tối thiểu là 73 → infeasible
+
+Giải pháp: loosen hard constraint HC2 (cho phép shifts=0)
+           hoặc giảm số cán bộ input
+
+
+5.5 ĐỘ PHỨC TẠP TÍNH TOÁN (Computational Complexity)
+---------
+Model kích thước:
+  - Variables: ~5,000 (73 × 65 + slack variables)
+  - Constraints: ~150-200
+  - Constraint matrix: ~5,000 × 200 non-zeros
+
+Tính chất:
+  - MILP là NP-hard, thời gian giải có thể tăng exponentially
+  - CBC thường giải được trong < 1 phút cho kích thước này
+  - Nếu thêm constraints phức tạp → timeout có thể xảy ra
+
+Nếu quá chậm:
+  1. Tăng timeout (e.g., 120 giây)
+  2. Dùng heuristic thay vì exact (kém tối ưu nhưng nhanh)
+  3. Giảm kích thước input
+
+
+5.6 ĐỘ NHẠY ĐẦU VÀO (Input Sensitivity)
+---------
+Kết quả của model rất nhạy với:
+
+A. Dữ liệu khoảng cách (distance):
+   - Nếu một vài cán bộ gần cơ sở A, các ca ở A sẽ ưu tiên gán cho họ
+   - Cân nhắc: có phân phối cân bằng không? (e.g., 30 gần A, 43 gần B)
+   - Thiếu cân bằng → một nhóm sẽ bị "quá tải", nhóm kia "nhàn rỗi"
+
+B. Dữ liệu tuổi/giới tính:
+   - Nếu toàn bộ ~50% nữ → penalty giới tính rất lớn
+   - Nếu chỉ ~5 người ≥55 tuổi → penalty tuổi có thể bỏ qua
+   - Distribution không cân bằng → hard để balance
+
+C. Thay đổi d[ca] (nhu cầu shifts):
+   - Nếu d[ca] + 20% → shifts/staff ↑ → over ↑ → Z ↑
+   - Model không adaptable linh hoạt với thay đổi lớn
+
+
+5.7 HIỆU NĂNG XUẤT BẢN (Solution Quality)
+---------
+Rủi ro:
+  - CBC có thể không tìm được optimal, chỉ feasible solution
+  - Nếu timeout → output có thể không tối ưu
+  - Khó đánh giá quality mà không so sánh với lower bound
+
+Kiểm tra:
+  1. Xem solver status: "Optimal" hay "Feasible"?
+  2. Tính tay độ lệch fairness từ output → so sánh với Z_fairness
+  3. Nếu Z_fairness lớn hơn dự tính → có vấn đề
+
+
+5.8 CHIẾN LƯỢC TRÁNH TRÙNG LẶP (Overlap Penalty Strategy)
+---------
+Vấn đề: Cán bộ có thể bị gán nhiều ca trực trong cùng một ngày 
+        tại cùng một cơ sở, gây mệt mỏi và không hiệu quả.
+
+Giải pháp: Sử dụng hàm `get_overlap_penalty()` để phạt những assignment này:
+
+a) PHƯƠNG PHÁP TÍNH PENALTY:
+   - Nhóm tất cả ca trực của cán bộ cb theo (ngày, cơ sở)
+   - Với mỗi nhóm (ngày D, cơ sở F):
+     * Nếu có 1 ca → penalty = 0
+     * Nếu có 2 ca → penalty = 1 (count - 1)
+     * Nếu có 3 ca → penalty = 2 (count - 1)
+     * Nếu có k ca → penalty = k - 1
+
+b) TRÍCH XUẤT NGÀY:
+   - Format MS_ca: "YYYYMMDD_X" (e.g., "20260518_5")
+   - Trích phần trước dấu "_" = ngày thi
+   - Ví dụ: "20260518_5" → ngày = "20260518"
+
+c) THAM SỐ:
+   - w_overlap = OVERLAP_WEIGHT (e.g., 500.0)
+   - Điều chỉnh trọng số để ưu tiên mức độ tránh trùng lặp
+   - Nếu w_overlap quá nhỏ → overlap vẫn xảy ra
+   - Nếu w_overlap quá lớn → có thể ảnh hưởng đến fairness
+
+d) TÁC DỤNG:
+   - Mục tiêu: mỗi cán bộ nên có tối đa 1 ca/ngày/cơ sở
+   - Nếu bắt buộc phải có nhiều ca → penalty tăng dần
+   - Giúp cân bằng tải công việc theo chiều ngang (intra-day)
+   - Bổ sung cho fairness (cân bằng theo chiều dọc - inter-staff)
+
+
+6. KHUYẾN NGHỊ ĐIỀU CHỈNH
+================================================================================
+
+Để cải thiện output:
+
+1. ĐỀU KẾ FAIRNESS + DISTANCE/GENDER/AGE/OVERLAP:
+   - w_fairness = 2000 (duy trì)
+   - w_distance = 1500-2000 (tăng từ 300 để tác động)
+   - w_gender = 200-500 (tăng từ 100)
+   - w_age = 300-600 (tăng từ 200)
+   - w_overlap = 400-800 (phạt trùng lặp ca/ngày/cơ sở)
+   
+   Lý do: làm cho các mục tiêu có quyền lực tương xứng
+
+2. ĐIỀU CHỈNH OVERLAP_WEIGHT DỰA TRÊN MỤC TIÊU:
+   - Nếu muốn tránh hoàn toàn trùng lặp: w_overlap = 1000+
+   - Nếu chấp nhận vài trùng lặp: w_overlap = 300-500
+   - Kiểm tra output: số lần trùng lặp (day-facility overlap count)
+   
+   Ví dụ: Nếu 30 cán bộ trực ngày 20260518 tại CS1
+        → có thể một vài cán bộ bị gán 2-3 ca cùng ngày
+        → penalty_overlap để balance tải trong ngày đó
+
+3. THỬ NGHIỆM HARD CONSTRAINT FAIRNESS:
+   - Thêm: shifts[cb] ≤ ceil(μ) + 1  (không ai vượt quá +1)
+   - Thêm: shifts[cb] ≥ floor(μ)     (ai cũng ít nhất floor(μ))
+   
+   Ưu điểm: fairness được đảm bảo ngay từ hard level
+   Nhược điểm: có thể gây infeasible hoặc gap lớn
+
+
+4. SỬ DỤNG LEXICOGRAPHIC OPTIMIZATION:
+   - Bước 1: maximize fairness (minimize total deviation)
+   - Bước 2: giữ fairness ở mức tốt nhất, minimize overlap
+   - Bước 3: giữ fairness+overlap, minimize distance
+   - Bước 4: giữ fairness+overlap+distance, minimize gender/age
+   
+   Ưu điểm: ưu tiên rõ ràng
+   Nhược điểm: phải chạy nhiều lần
+
+
+5. DATA VALIDATION:
+   - Kiểm tra distance distribution: có cân bằng giữa các cơ sở không?
+   - Kiểm tra gender/age distribution: có bias không?
+   - Kiểm tra d[ca]: có hợp lý không? (e.g., 1-10 cán bộ/ca)
+   - Kiểm tra MS_ca format: có đúng "YYYYMMDD_X" không?
+   - Kiểm tra Cơ sở column: có giá trị hợp lệ không? (Cơ sở 1, Cơ sở 2, ...)
+
+
+================================================================================
+End of Mathematical Model Description
+===============================================================================
+================================================================================
+Công cụ: PuLP (Python library) + CBC Solver (Coin-or branch and cut)
+- Thuật toán: Branch and Bound
+- Thời gian giới hạn: 300 giây
+- Độ chính xác: Tìm lời giải tối ưu (Optimal)
+
+
+5. KẾT QUẢ
+================================================================================
+Trạng thái: OPTIMAL (Lời giải tối ưu)
+Thời gian giải: 0.06 giây
+
+Kết quả phân công:
+- Tổng phân công: 362 (đủ yêu cầu)
+- Tất cả 73 cán bộ được phân công
+- Phân bố:
+  * Tối thiểu: 3 ca/cán bộ
+  * Tối đa: 35 ca/cán bộ
+  * Trung bình: 18.10 ca/cán bộ
+- Giá trị mục tiêu: 130,460
+
+
+6. ƯU TIÊN TỐI ƯU HÓA
+================================================================================
+Thứ tự ưu tiên (theo hệ số trọng số):
+
+1. FAIRNESS (Weight = 2000)
+   → Cân bằng tải công việc giữa các cán bộ
+   → Minimize độ lệch khỏi trung bình số ca
+   → Đảm bảo công bằng
+
+2. KHOẢNG CÁCH (Weight = 300)
+   → Ưu tiên gán cán bộ gần cơ sở thi nhất
+   → Giảm chi phí đi lại
+   → Cải thiện hiệu quả công việc
+
+3. TUỔI (Weight = 200)
+   → Cán bộ ≥55 tuổi trực ít hơn
+   → Bảo vệ sức khỏe cán bộ cao tuổi
+
+4. GIỚI TÍNH (Weight = 100)
+   → Cán bộ nữ trực ít hơn cán bộ nam
+   → Bảo vệ sức khỏe phụ nữ
+
+5. TRÙNG LẶP CA TRỰC (Weight = 500)
+   → Cán bộ tránh trực nhiều ca cùng ngày tại cùng cơ sở
+   → Giảm mệt mỏi trong ngày
+   → Đảm bảo chất lượng công việc
+   → Penalty tăng dần từ ca thứ 2 trở lên: p = count - 1
+
+
+7. ĐIỀU KIỆN DỮ LIỆU
+================================================================================
+Dữ liệu: Lấy từ file Excel
+- can_bo.xlsx: Danh sách 73 cán bộ
+  Cột: MS_CB, Giới tính, Tuổi (nếu có), Khoảng cách đến Cơ sở 1/2/...
+
+- ca_thi.xlsx: Danh sách 65 ca thi
+  Cột: MS_CA, Ngày, Giờ, Cơ sở, Số cán bộ cần thiết
+
+
+8. GIẢI THÍCH CHI PHÍ TÍNH TOÁN
+================================================================================
+
+8.1 Chi phí khoảng cách:
+    Chi phí = Khoảng cách (km) × 100
+    
+    Ví dụ: Nếu cán bộ cách cơ sở 5km, gán 1 ca → chi phí = 5 × 100 = 500
+
+8.2 Chi phí giới tính:
+    Nữ: mỗi ca trực → chi phí = 1 × 200 = 200
+    Nam: không có chi phí
+
+    Ví dụ: Nữ trực 15 ca → chi phí = 15 × 200 = 3,000
+
+8.3 Chi phí tuổi:
+    Tuổi < 55: không có chi phí
+    Tuổi ≥ 55: chi phí = (Tuổi - 50) / 10 × 150
+    
+    Ví dụ: Cán bộ 60 tuổi trực 18 ca → chi phí = (60-50)/10 × 150 × 18 = 150 × 18 = 2,700
+    
+    Ví dụ: Cán bộ 70 tuổi trực 3 ca → chi phí = (70-50)/10 × 150 × 3 = 300 × 3 = 900
+
+
+9. VÍ DỤ CHI TIẾT
+================================================================================
+
+Giả sử cán bộ CB001:
+- Giới tính: Nữ
+- Tuổi: 58 tuổi
+- Khoảng cách đến Cơ sở 1: 5 km
+- Được gán 15 ca thi tại Cơ sở 1
+
+Tính chi phí:
+- Chi phí khoảng cách: 5 × 100 × 15 = 7,500
+- Chi phí giới tính: 1 × 200 × 15 = 3,000
+- Chi phí tuổi: (58-50)/10 × 150 × 15 = 0.8 × 150 × 15 = 1,800
+
+Tổng chi phí CB001: 7,500 + 3,000 + 1,800 = 12,300
+
+
+10. TÍNH KHẢ THI (Feasibility)
+================================================================================
+
+Bài toán khả thi (có lời giải) khi:
+- 73 cán bộ ≥ 362 / max_ca (yêu cầu tối đa/ca) = 362 / 10 = 36.2
+  ✓ 73 ≥ 36.2 → Khả thi
+
+Bài toán không khả thi khi:
+- Tổng yêu cầu > 73 × max_ca_mỗi_người
+- Hoặc ràng buộc mâu thuẫn
+
+
+11. GIỚI HẠN VÀ HƯỚNG PHÁT TRIỂN
+================================================================================
+
+Giới hạn hiện tại:
+- Mô hình tuyến tính (không xét các ràng buộc phi tuyến)
+- Không xét điều kiện kỹ năng chuyên môn
+- Không xét thời gian rảnh rỗi
+- Chi phí khoảng cách không phụ thuộc vào thời gian
+
+Hướng phát triển:
+- Thêm ràng buộc kỹ năng
+- Thêm các tiêu chí mềm khác
+- Tối ưu hóa động (cập nhật theo thời gian thực)
+- Phân tích độ nhạy của các hệ số trọng số
+
+
+================================================================================
+Tài liệu này mô tả chi tiết quy trình toán học của hệ thống tối ưu lịch trực coi thi.
+================================================================================

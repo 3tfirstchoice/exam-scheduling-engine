@@ -1,0 +1,13 @@
+# Môi trường ảo
+env/
+venv/
+
+# Rác hệ thống Python
+__pycache__/
+*.pyc
+
+# Cấu hình IDE
+.vscode/
+
+# File kết quả đầu ra 
+outputs/Ket_Qua_Xep_Lich.xlsx
