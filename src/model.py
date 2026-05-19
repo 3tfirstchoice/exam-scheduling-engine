@@ -510,6 +510,36 @@ def _robin_hood_gap_reducer(
                     #Bảo vệ người già: Khước từ gán nếu đó là ca đêm
                     if is_elderly[poor_staff] and is_late[candidate_slot]:
                         continue
+                    
+                    if len(problem.same_shift_pairs) > 0:
+                        # 1. Tìm các slot đang diễn ra CÙNG CA với candidate_slot này
+                        mask_0 = problem.same_shift_pairs[:, 0] == candidate_slot
+                        mask_1 = problem.same_shift_pairs[:, 1] == candidate_slot
+                        partner_slots = np.concatenate([
+                            problem.same_shift_pairs[mask_0, 1],
+                            problem.same_shift_pairs[mask_1, 0]
+                        ])
+                        
+                        # 2. Lấy danh sách ID cán bộ (partners) đang gác ở các slot đó
+                        partners = chromosome[partner_slots]
+                        
+                        # 3. Quét xem poor_staff ĐÃ TỪNG gác chung với các partner này mấy lần rồi
+                        creates_pair_violation = False
+                        c1_arr = chromosome[problem.same_shift_pairs[:, 0]]
+                        c2_arr = chromosome[problem.same_shift_pairs[:, 1]]
+                        
+                        for partner in partners:
+                            overlap_count = np.sum(
+                                ((c1_arr == poor_staff) & (c2_arr == partner)) |
+                                ((c1_arr == partner) & (c2_arr == poor_staff))
+                            )
+                            # Nếu gán vào đây mà đụng mặt nhau từ lần thứ 2 trở lên -> Hủy kèo!
+                            if overlap_count >= 2:  
+                                creates_pair_violation = True
+                                break
+                                
+                        if creates_pair_violation:
+                            continue  # Bỏ qua slot này, Robin Hood đi tìm slot khác
 
                     chromosome[candidate_slot] = poor_staff   
 

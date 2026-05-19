@@ -89,7 +89,7 @@ ELDERLY_SHIFT_OVERLOAD_PENALTY = 20_000.0
 CONSECUTIVE_SAME_CAMPUS_PENALTY = 15_000.0  
 
 # ── F2d │ Hạn chế lặp cặp gác chung (Diversity of Pairs) ────────────────────
-REPEAT_PAIR_PENALTY = 12_000.0 
+REPEAT_PAIR_PENALTY = 17_000.0 
 
 # ── F3 │ Cân bằng ca cuối tuần ────────────────────────── [RC14] ─────────────
 WEEKEND_OVERLOAD_PENALTY = 7_000.0
