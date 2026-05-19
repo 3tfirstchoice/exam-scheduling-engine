@@ -10,4 +10,5 @@ __pycache__/
 .vscode/
 
 # File kết quả đầu ra 
-outputs/Ket_Qua_Xep_Lich.xlsx
+!outputs/
+!outputs/Ket_Qua_Xep_Lich.xlsx
