@@ -111,7 +111,7 @@ class ExamSchedulingProblem(Problem):
 
         self.exam_date, _ = pd.factorize(shift_data["Ngày"])
 
-        # [FIX ĐIỂM YẾU 3] Cơ sở: Mã hóa động (factorize) để hỗ trợ N cơ sở
+      
         self.campus, _ = pd.factorize(shift_data["Cơ sở"])
 
         # Để giữ an toàn cho travel matrix với dữ liệu chỉ có CS1/CS2 hiện tại:
@@ -142,6 +142,7 @@ class ExamSchedulingProblem(Problem):
         hard_conflict_list        = []
         cross_campus_soft_list    = []
         consecutive_same_cs_list  = []
+        same_shift_list           = []
 
         for slot_j in range(num_slots):
             for slot_k in range(slot_j + 1, num_slots):
@@ -159,6 +160,8 @@ class ExamSchedulingProblem(Problem):
                     cross_campus_soft_list.append((slot_j, slot_k))
                 elif shift_gap == 1 and is_same_campus:
                     consecutive_same_cs_list.append((slot_j, slot_k))
+                if shift_gap == 0 and is_same_campus:
+                    same_shift_list.append((slot_j, slot_k))
 
         def _to_numpy_pair_array(pair_list: list) -> np.ndarray:
             return (
@@ -170,11 +173,12 @@ class ExamSchedulingProblem(Problem):
         self.hard_conflict_pairs            = _to_numpy_pair_array(hard_conflict_list)
         self.soft_cross_campus_pairs        = _to_numpy_pair_array(cross_campus_soft_list)
         self.soft_consecutive_same_cs_pairs = _to_numpy_pair_array(consecutive_same_cs_list)
+        self.same_shift_pairs               = _to_numpy_pair_array(same_shift_list)
 
         print(f"  Cặp xung đột cứng  [RC1, RC10]: {len(self.hard_conflict_pairs):>5}")
         print(f"  Cặp soft khác CS   [RC9]      : {len(self.soft_cross_campus_pairs):>5}")
         print(f"  Cặp soft liền ca   [RC11]     : {len(self.soft_consecutive_same_cs_pairs):>5}\n")
-
+        print(f"  Cặp slot gác chung      : {len(self.same_shift_pairs):>5}\n")
     # ───────────────────────────────────────────────────────────────
     # 1.4  HÀM ĐÁNH GIÁ QUẦN THỂ (VECTORIZED FITNESS EVALUATION)
     # ───────────────────────────────────────────────────────────────
@@ -300,11 +304,37 @@ class ExamSchedulingProblem(Problem):
         else:
             f2_consecutive_fatigue_penalty = np.zeros(pop_size)
 
+            
+        # ── F2d │ HẠN CHẾ LẶP CẶP GÁC CHUNG (DIVERSITY OF PAIRS) ───────────────
+        if len(self.same_shift_pairs) > 0:
+            slots_u = self.same_shift_pairs[:, 0]
+            slots_v = self.same_shift_pairs[:, 1]
+
+            # Bóc xuất mã cán bộ đang gác tại các cặp slot này
+            staff_u = X[:, slots_u]
+            staff_v = X[:, slots_v]
+
+            # Quy chuẩn (min, max) để cặp (A, B) hay (B, A) đều cho ra 1 ID duy nhất
+            min_staff = np.minimum(staff_u, staff_v)
+            max_staff = np.maximum(staff_u, staff_v)
+
+            # Hàm Băm (Hash): Ép mỗi cặp cán bộ thành 1 con số nguyên duy nhất
+            pair_hash_id = min_staff * self.num_staff + max_staff
+
+            #Sort theo chiều ngang và đếm số phần tử liền kề giống nhau
+            sorted_hash = np.sort(pair_hash_id, axis=1)
+            repeated_pairs_count = np.sum(sorted_hash[:, 1:] == sorted_hash[:, :-1], axis=1)
+
+            f2_repeat_pair_penalty = repeated_pairs_count * config.REPEAT_PAIR_PENALTY
+        else:
+            f2_repeat_pair_penalty = np.zeros(pop_size)
+
         quality_score = (
             f2_total_travel_distance
             + f2_elderly_late_shift_penalty
             + f2_elderly_overload_penalty
             + f2_consecutive_fatigue_penalty
+            + f2_repeat_pair_penalty
         )
 
         # ── F3 │ CÂN BẰNG CA CUỐI TUẦN ────────────────────────────────────────
