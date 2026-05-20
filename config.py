@@ -48,8 +48,8 @@ ELDERLY_AGE_THRESHOLD = 45
 # PHẦN 3 ─ TRỌNG SỐ CHỌN NGHIỆM (TCHEBYCHEFF SCALARIZATION)
 # ═══════════════════════════════════════════════════════════════════
 
-WEIGHT_FAIRNESS_F1 = 0.70   
-WEIGHT_QUALITY_F2  = 0.20   
+WEIGHT_FAIRNESS_F1 = 0.60   
+WEIGHT_QUALITY_F2  = 0.30   
 WEIGHT_WEEKEND_F3  = 0.10   
 
 TCHEBYCHEFF_AUGMENTATION_COEFF = 0.05   
@@ -75,7 +75,11 @@ ELDERLY_HEAVIER_LOAD_PENALTY   = 30_000_000.0
 DISTANT_HEAVIER_LOAD_PENALTY   = 50_000_000.0  
 
 # ── F1d │ Ưu tiên cùng cơ sở trong ngày ──────────────── [RC9] ──────────────
-SAME_DAY_CAMPUS_SWITCH_PENALTY =  8_000_000.0  
+SAME_DAY_CAMPUS_SWITCH_PENALTY =  25_000_000.0  
+
+# ── F2x │ Hạn chế một cán bộ gác nhiều ca trong một ngày ──────────────
+MULTI_SHIFT_PER_DAY_PENALTY = 100_000_000.0
+CROSS_CAMPUS_SAME_DAY_PENALTY = 100_000_000.0
 
 # ── F2a │ Tối ưu quãng đường ──────────────────────────── [RC7] ──────────────
 # Nâng Scale của Quãng đường để cân bằng với các Penalty khác trong F2
@@ -86,10 +90,10 @@ ELDERLY_LATE_SHIFT_PENALTY   = 15_000.0
 ELDERLY_SHIFT_OVERLOAD_PENALTY = 20_000.0 
 
 # ── F2c │ Hạn chế ca liên tiếp cùng cơ sở ────────────── [RC11] ─────────────
-CONSECUTIVE_SAME_CAMPUS_PENALTY = 15_000.0  
+CONSECUTIVE_SAME_CAMPUS_PENALTY = 200_000_000.0  
 
-# ── F2d │ Hạn chế lặp cặp gác chung (Diversity of Pairs) ────────────────────
-REPEAT_PAIR_PENALTY = 25_000.0 
+# ── F2d │ Hạn chế lặp cặp gác chung (RB13: Shared pair diversity) ────────────
+REPEAT_PAIR_PENALTY = 200_000_000.0 
 
 # ── F3 │ Cân bằng ca cuối tuần ────────────────────────── [RC14] ─────────────
 WEEKEND_OVERLOAD_PENALTY = 7_000.0

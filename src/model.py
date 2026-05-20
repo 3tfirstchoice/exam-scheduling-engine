@@ -23,11 +23,14 @@ BẢNG ÁNH XẠ RÀNG BUỘC (Requirement Traceability Matrix)
 
 import numpy as np
 import pandas as pd
+
+from numba import njit, prange
+
 from pymoo.core.problem import Problem
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
-from pymoo.operators.crossover.ux import UniformCrossover
+from pymoo.operators.crossover.sbx import SBX                   
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.repair.rounding import RoundingRepair
 
@@ -113,14 +116,15 @@ class ExamSchedulingProblem(Problem):
 
       
         self.campus, _ = pd.factorize(shift_data["Cơ sở"])
-
-        # Để giữ an toàn cho travel matrix với dữ liệu chỉ có CS1/CS2 hiện tại:
-        self.travel_distance_matrix = np.zeros((self.num_staff, self.num_slots))
-        for i, campus_name in enumerate(shift_data["Cơ sở"].astype(str)):
-            if "1" in campus_name:
-                self.travel_distance_matrix[:, i] = self.distance_to_cs1
-            else:
-                self.travel_distance_matrix[:, i] = self.distance_to_cs2
+        campus_str = shift_data["Cơ sở"].astype(str).values
+        is_cs1 = np.array(["1" in str(cs) for cs in campus_str], dtype=bool)
+        
+        # Broadcasting: (num_staff,) + (num_slots,) → (num_staff, num_slots)
+        self.travel_distance_matrix = np.where(
+            is_cs1[None, :],  # Expand to (1, num_slots)
+            self.distance_to_cs1[:, None],  # Expand to (num_staff, 1)
+            self.distance_to_cs2[:, None]   # Expand to (num_staff, 1)
+        ).astype(np.float32)
 
         self.is_late_shift = (
             shift_data["Ca thi"].astype(str)
@@ -138,47 +142,137 @@ class ExamSchedulingProblem(Problem):
     # 1.3  XÂY DỰNG MA TRẬN RÀNG BUỘC
     # ───────────────────────────────────────────────────────────────
 
+   
     def _build_conflict_matrices(self, num_slots: int) -> None:
-        hard_conflict_list        = []
-        cross_campus_soft_list    = []
-        consecutive_same_cs_list  = []
-        same_shift_list           = []
+        # BƯỚC 1: Ép kiểu dữ liệu 
+        dates = self.exam_date.astype(np.int64)
+        shifts = self.shift_order_in_day.astype(np.int64)
+        campus_arr = self.campus.astype(np.int64)
 
-        for slot_j in range(num_slots):
-            for slot_k in range(slot_j + 1, num_slots):
+        # BƯỚC 2: Sắp xếp theo ngày để gom các slot cùng ngày lại
+        sort_idx = np.argsort(dates)
+        
+        sorted_dates = dates[sort_idx]
+        sorted_shifts = shifts[sort_idx]
+        sorted_campus = campus_arr[sort_idx]
+        # Giữ index gốc để map lại kết quả y như code cũ
+        sorted_orig_idx = np.arange(num_slots, dtype=np.int32)[sort_idx]
 
-                if self.exam_date[slot_j] != self.exam_date[slot_k]:
-                    continue    
+        # BƯỚC 3: Tìm ranh giới của từng ngày (chia mảng)
+        change_mask = sorted_dates[1:] != sorted_dates[:-1]
+        start_indices = np.zeros(np.sum(change_mask) + 1, dtype=np.int32)
+        start_indices[1:] = np.where(change_mask)[0] + 1
+        end_indices = np.append(start_indices[1:], num_slots)
 
-                shift_gap      = abs(self.shift_order_in_day[slot_j] - self.shift_order_in_day[slot_k])
-                is_diff_campus = self.campus[slot_j] != self.campus[slot_k]
-                is_same_campus = not is_diff_campus
+        @njit(fastmath=True, parallel=True, cache=True)
+        def _count_conflicts_segmented(start_arr, end_arr, s_arr, c_arr):
+            hard = soft_cross = soft_consec = same_shift = 0
+            num_days = len(start_arr)
 
-                if shift_gap == 0 or (shift_gap == 1 and is_diff_campus):
-                    hard_conflict_list.append((slot_j, slot_k))
-                elif shift_gap >= 2 and is_diff_campus:
-                    cross_campus_soft_list.append((slot_j, slot_k))
-                elif shift_gap == 1 and is_same_campus:
-                    consecutive_same_cs_list.append((slot_j, slot_k))
-                if shift_gap == 0 and is_same_campus:
-                    same_shift_list.append((slot_j, slot_k))
+            for d in prange(num_days):
+                start = start_arr[d]
+                end = end_arr[d]
+                
+                # Numba giờ chỉ duyệt vòng lặp NGẮN bên trong từng ngày
+                for j in range(start, end):
+                    s_j = s_arr[j]
+                    c_j = c_arr[j]
+                    for k in range(j + 1, end):
+                        gap = abs(s_j - s_arr[k])
+                        same_campus = (c_j == c_arr[k])
 
-        def _to_numpy_pair_array(pair_list: list) -> np.ndarray:
-            return (
-                np.array(pair_list, dtype=np.int32)
-                if pair_list
-                else np.empty((0, 2), dtype=np.int32)
-            )
+                        if gap == 0 or (gap == 1 and not same_campus):
+                            hard += 1
+                        elif gap >= 2 and not same_campus:
+                            soft_cross += 1
+                        elif gap == 1 and same_campus:
+                            soft_consec += 1
+                        if gap == 0 and same_campus:
+                            same_shift += 1
 
-        self.hard_conflict_pairs            = _to_numpy_pair_array(hard_conflict_list)
-        self.soft_cross_campus_pairs        = _to_numpy_pair_array(cross_campus_soft_list)
-        self.soft_consecutive_same_cs_pairs = _to_numpy_pair_array(consecutive_same_cs_list)
-        self.same_shift_pairs               = _to_numpy_pair_array(same_shift_list)
+            return hard, soft_cross, soft_consec, same_shift
 
-        print(f"  Cặp xung đột cứng  [RC1, RC10]: {len(self.hard_conflict_pairs):>5}")
-        print(f"  Cặp soft khác CS   [RC9]      : {len(self.soft_cross_campus_pairs):>5}")
-        print(f"  Cặp soft liền ca   [RC11]     : {len(self.soft_consecutive_same_cs_pairs):>5}\n")
-        print(f"  Cặp slot gác chung      : {len(self.same_shift_pairs):>5}\n")
+        @njit(fastmath=True, cache=True)
+        def _fill_conflicts_segmented(start_arr, end_arr, s_arr, c_arr, orig_idx, 
+                                      h_count, sc_count, scc_count, ss_count):
+            hard_pairs        = np.empty((h_count, 2), dtype=np.int32)
+            soft_cross_pairs  = np.empty((sc_count, 2), dtype=np.int32)
+            soft_consec_pairs = np.empty((scc_count, 2), dtype=np.int32)
+            same_shift_pairs  = np.empty((ss_count, 2), dtype=np.int32)
+
+            h_idx = sc_idx = scc_idx = ss_idx = 0
+            num_days = len(start_arr)
+
+            for d in range(num_days):
+                start = start_arr[d]
+                end = end_arr[d]
+
+                for j in range(start, end):
+                    s_j = s_arr[j]
+                    c_j = c_arr[j]
+                    idx_j = orig_idx[j]
+                    for k in range(j + 1, end):
+                        gap = abs(s_j - s_arr[k])
+                        same_campus = (c_j == c_arr[k])
+                        idx_k = orig_idx[k]
+
+                        p0, p1 = (idx_j, idx_k) if idx_j < idx_k else (idx_k, idx_j)
+
+                        if gap == 0 or (gap == 1 and not same_campus):
+                            hard_pairs[h_idx, 0] = p0
+                            hard_pairs[h_idx, 1] = p1
+                            h_idx += 1
+                        elif gap >= 2 and not same_campus:
+                            soft_cross_pairs[sc_idx, 0] = p0
+                            soft_cross_pairs[sc_idx, 1] = p1
+                            sc_idx += 1
+                        elif gap == 1 and same_campus:
+                            soft_consec_pairs[scc_idx, 0] = p0
+                            soft_consec_pairs[scc_idx, 1] = p1
+                            scc_idx += 1
+                        if gap == 0 and same_campus:
+                            same_shift_pairs[ss_idx, 0] = p0
+                            same_shift_pairs[ss_idx, 1] = p1
+                            ss_idx += 1
+
+            return hard_pairs, soft_cross_pairs, soft_consec_pairs, same_shift_pairs
+
+        # ====================== THỰC THI ======================
+        hard_c, sc_c, scc_c, ss_c = _count_conflicts_segmented(
+            start_indices, end_indices, sorted_shifts, sorted_campus
+        )
+
+        hard, soft_cross, soft_consec, same_shift = _fill_conflicts_segmented(
+            start_indices, end_indices, sorted_shifts, sorted_campus, sorted_orig_idx,
+            hard_c, sc_c, scc_c, ss_c
+        )
+
+        # Sắp xếp lại để trả về kết quả 
+        if len(hard) > 0: hard = hard[np.lexsort((hard[:, 1], hard[:, 0]))]
+        if len(soft_cross) > 0: soft_cross = soft_cross[np.lexsort((soft_cross[:, 1], soft_cross[:, 0]))]
+        if len(soft_consec) > 0: soft_consec = soft_consec[np.lexsort((soft_consec[:, 1], soft_consec[:, 0]))]
+        if len(same_shift) > 0: same_shift = same_shift[np.lexsort((same_shift[:, 1], same_shift[:, 0]))]
+
+        self.hard_conflict_pairs            = hard
+        self.soft_cross_campus_pairs        = soft_cross
+        self.soft_consecutive_same_cs_pairs = soft_consec
+        self.same_shift_pairs               = same_shift
+
+        # Pre-compute conflict_map từ hard_conflict_pairs
+        self.conflict_map = {}
+        if len(hard) > 0:
+            for slot_j, slot_k in hard:
+                if slot_j not in self.conflict_map:
+                    self.conflict_map[slot_j] = []
+                if slot_k not in self.conflict_map:
+                    self.conflict_map[slot_k] = []
+                self.conflict_map[slot_j].append(slot_k)
+                self.conflict_map[slot_k].append(slot_j)
+
+        print(f"  Cặp xung đột cứng     : {len(hard):>5}")
+        print(f"  Cặp soft khác CS      : {len(soft_cross):>5}")
+        print(f"  Cặp soft liền ca CS   : {len(soft_consec):>5}")
+        print(f"  Cặp gác chung         : {len(same_shift):>5}\n")
     # ───────────────────────────────────────────────────────────────
     # 1.4  HÀM ĐÁNH GIÁ QUẦN THỂ (VECTORIZED FITNESS EVALUATION)
     # ───────────────────────────────────────────────────────────────
@@ -222,11 +316,12 @@ class ExamSchedulingProblem(Problem):
         )
 
         # ── F1c │ CÔNG BẰNG LIÊN THẾ HỆ & ĐỊA LÝ ───────────────────────────────
-        total_km_per_staff = np.zeros((pop_size, self.num_staff))
-        for staff_idx in range(self.num_staff):
-            total_km_per_staff[:, staff_idx] = (
-                travel_km_per_slot * (X == staff_idx)
-            ).sum(axis=1)
+        # Dùng np.add.at() 
+        total_km_per_staff = np.zeros((pop_size, self.num_staff), dtype=np.float32)
+        for p_idx in range(pop_size):
+            # np.add.at accumulates values at specified indices
+            # Tương đương: total_km_per_staff[p_idx, X[p_idx]] += travel_km_per_slot[p_idx]
+            np.add.at(total_km_per_staff[p_idx], X[p_idx], travel_km_per_slot[p_idx])
 
         count_gte = shift_count_per_staff[:, :, None] >= shift_count_per_staff[:, None, :]
 
@@ -234,16 +329,27 @@ class ExamSchedulingProblem(Problem):
         is_young   = ~is_elderly
 
         f1_intergenerational_fairness = np.zeros(pop_size)
+        # Chỉ tính comparison cho elderly vs young subset 
         if is_elderly.any() and is_young.any():
-            elderly_km_gt_young_km = (
-                total_km_per_staff[:, is_elderly, None]
-                > total_km_per_staff[:, None, is_young]
-            )
-            elderly_count_gte_young = count_gte[:, is_elderly, :][:, :, is_young]
+            elderly_idx = np.where(is_elderly)[0]
+            young_idx = np.where(is_young)[0]
+            
+            # Giảm chiều so sánh từ (N_elderly, N_young) ứng với mỗi pop
+            elderly_km = total_km_per_staff[:, elderly_idx]  # (pop, N_elderly)
+            young_km = total_km_per_staff[:, young_idx]      # (pop, N_young)
+            
+            # Broadcasting comparison: (pop, N_elderly, 1) > (pop, 1, N_young)
+            elderly_km_gt_young_km = elderly_km[:, :, None] > young_km[:, None, :]
+            
+            # Count shift comparisons cho elderly
+            elderly_count = shift_count_per_staff[:, elderly_idx]  # (pop, N_elderly)
+            young_count = shift_count_per_staff[:, young_idx]      # (pop, N_young)
+            elderly_count_gte_young = elderly_count[:, :, None] >= young_count[:, None, :]
+            
             num_age_violations = np.sum(
                 elderly_km_gt_young_km & elderly_count_gte_young, axis=(1, 2)
             )
-            f1_intergenerational_fairness += num_age_violations * config.ELDERLY_HEAVIER_LOAD_PENALTY
+            f1_intergenerational_fairness = num_age_violations * config.ELDERLY_HEAVIER_LOAD_PENALTY
 
         count_gt = shift_count_per_staff[:, :, None] > shift_count_per_staff[:, None, :]
         num_geo_violations = np.sum(
@@ -269,6 +375,41 @@ class ExamSchedulingProblem(Problem):
             + f1_geographic_fairness
             + f1_same_campus_preference
         )
+
+        # ── F2x │ HẠN CHẾ MỘT CÁN BỘ GÁC NHIỀU CA CÙNG NGÀY ──────────────────
+        num_days = int(self.exam_date.max() + 1)
+        if num_days > 1:
+            staff_day_index = X * num_days + self.exam_date[None, :]
+            staff_day_counts = np.zeros(
+                (pop_size, self.num_staff * num_days),
+                dtype=np.int32,
+            )
+            np.add.at(
+                staff_day_counts,
+                (np.arange(pop_size)[:, None], staff_day_index),
+                1,
+            )
+            staff_day_counts = staff_day_counts.reshape(
+                pop_size, self.num_staff, num_days
+            )
+            extra_same_day_shifts = np.maximum(0, staff_day_counts - 1)
+            f2_multishift_same_day_penalty = (
+                np.sum(extra_same_day_shifts, axis=(1, 2))
+                * config.MULTI_SHIFT_PER_DAY_PENALTY
+            )
+        else:
+            f2_multishift_same_day_penalty = np.zeros(pop_size)
+
+        # ── F2x2 │ HẠN CHẾ ĐỔI CƠ SỞ TRONG NGÀY KHI GÁC NHIỀU CA ─────────────
+        if len(self.soft_cross_campus_pairs) > 0:
+            slots_j = self.soft_cross_campus_pairs[:, 0]
+            slots_k = self.soft_cross_campus_pairs[:, 1]
+            num_cross_campus_same_day = (X[:, slots_j] == X[:, slots_k]).sum(axis=1)
+            f2_cross_campus_same_day_penalty = (
+                num_cross_campus_same_day * config.CROSS_CAMPUS_SAME_DAY_PENALTY
+            )
+        else:
+            f2_cross_campus_same_day_penalty = np.zeros(pop_size)
 
         # ── F2a │ TỐI ƯU QUÃNG ĐƯỜNG DI CHUYỂN ────────────────────────────────
         f2_total_travel_distance = (
@@ -321,16 +462,19 @@ class ExamSchedulingProblem(Problem):
             # Hàm Băm (Hash): Ép mỗi cặp cán bộ thành 1 con số nguyên duy nhất
             pair_hash_id = min_staff * self.num_staff + max_staff
 
-            #Sort theo chiều ngang và đếm số phần tử liền kề giống nhau
-            sorted_hash = np.sort(pair_hash_id, axis=1)
-            repeated_pairs_count = np.sum(sorted_hash[:, 1:] == sorted_hash[:, :-1], axis=1)
-
-            f2_repeat_pair_penalty = repeated_pairs_count * config.REPEAT_PAIR_PENALTY
+            # Count repeated pair occurrences beyond the first shared shift
+            f2_repeat_pair_penalty = np.zeros(pop_size, dtype=np.float32)
+            for p_idx in range(pop_size):
+                unique_ids, counts = np.unique(pair_hash_id[p_idx], return_counts=True)
+                repeated_pairs = np.maximum(0, counts - 1).sum()
+                f2_repeat_pair_penalty[p_idx] = repeated_pairs * config.REPEAT_PAIR_PENALTY
         else:
             f2_repeat_pair_penalty = np.zeros(pop_size)
 
         quality_score = (
-            f2_total_travel_distance
+            f2_multishift_same_day_penalty
+            + f2_cross_campus_same_day_penalty
+            + f2_total_travel_distance
             + f2_elderly_late_shift_penalty
             + f2_elderly_overload_penalty
             + f2_consecutive_fatigue_penalty
@@ -377,12 +521,14 @@ def run_nsga2_scheduler(
             f"         Gợi ý: Thêm cán bộ hoặc tăng ALLOWED_SHIFT_DEVIATION."
         )
 
-    expanded_slots = [
-        row.to_dict()
-        for _, row in shift_df.iterrows()
-        for _ in range(int(row["Số lượng cán bộ cần thiết"]))
-    ]
-    slots_df  = pd.DataFrame(expanded_slots)
+    # Vectorization 
+    expand_counts = shift_df["Số lượng cán bộ cần thiết"].astype(int).values
+    
+    # Chỉ số row cần repeat (mỗi row repeat expand_counts[i] lần)
+    repeat_indices = np.repeat(np.arange(len(shift_df)), expand_counts)
+    
+    # Expand DataFrame bằng fancy indexing 
+    slots_df = shift_df.iloc[repeat_indices].reset_index(drop=True)
     num_slots = len(slots_df)
     num_staff = len(staff_df)
 
@@ -394,7 +540,7 @@ def run_nsga2_scheduler(
     algorithm = NSGA2(
         pop_size             = config.POPULATION_SIZE,
         sampling             = IntegerRandomSampling(),
-        crossover            = UniformCrossover(prob=0.9),
+        crossover            = SBX(prob=0.9, eta=20),
         mutation             = PM(
                                    prob    = config.MUTATION_RATE,
                                    eta     = 10,
@@ -474,19 +620,31 @@ def _robin_hood_gap_reducer(
     max_iterations: int = 800
 ) -> np.ndarray:
     target_gap = config.ALLOWED_SHIFT_DEVIATION
-    conflict_map = getattr(problem, 'conflict_map', {})
+    
+    #Dùng problem.conflict_map (pre-computed)
+    conflict_map = problem.conflict_map if hasattr(problem, 'conflict_map') else {}
 
     # An toàn thuộc tính
     staff_ages = getattr(problem, 'staff_ages', getattr(problem, 'staff_age', np.zeros(num_staff)))
     is_elderly = staff_ages > getattr(config, 'ELDERLY_AGE_THRESHOLD', 55)
     is_late = getattr(problem, 'is_late_shift', getattr(problem, 'is_late', np.zeros(num_slots, dtype=bool)))
 
+    day_by_slot = getattr(problem, 'exam_date', np.zeros(num_slots, dtype=np.int32))
+    campus_by_slot = getattr(problem, 'campus', np.zeros(num_slots, dtype=np.int32))
+    shift_order_by_slot = getattr(problem, 'shift_order_in_day', np.zeros(num_slots, dtype=np.int32))
+
     print(f"\n[Robin Hood] Bắt đầu tinh chỉnh Gap (mục tiêu ≤ {target_gap})...")
 
     # Top-K động
     k = max(3, min(8, num_staff // 8))
 
+    # Pre-build staff→slots mapping để tránh np.where() liên tục
+    staff_to_slots = [[] for _ in range(num_staff)]
+    for slot_idx, staff_idx in enumerate(chromosome):
+        staff_to_slots[staff_idx].append(slot_idx)
+
     for iteration in range(max_iterations):
+        # Dùng bincount 1 lần rồi maintain thay vì tính lại
         shift_counts = np.bincount(chromosome, minlength=num_staff)
         current_gap = shift_counts.max() - shift_counts.min()
 
@@ -505,8 +663,9 @@ def _robin_hood_gap_reducer(
             if shift_counts[rich_staff] <= 1:        # Bảo vệ không cướp hết
                 continue
 
-            slots_of_rich = np.where(chromosome == rich_staff)[0]
-            if slots_of_rich.size == 0:
+            # Dùng pre-built mapping thay vì np.where()
+            slots_of_rich = staff_to_slots[rich_staff].copy()
+            if len(slots_of_rich) == 0:
                 continue
 
             np.random.shuffle(slots_of_rich)
@@ -523,15 +682,39 @@ def _robin_hood_gap_reducer(
                     if is_elderly[poor_staff] and is_late[slot]:
                         continue
 
-                    # 2. Kiểm tra hard conflict
-                    conflicting = any(chromosome[c_slot] == poor_staff 
-                                    for c_slot in conflict_map.get(slot, []))
-                    if conflicting:
+                    # 2. Kiểm tra hard conflict dùng pre-computed conflict_map
+                    if slot in conflict_map:
+                        conflicting = any(chromosome[c_slot] == poor_staff 
+                                        for c_slot in conflict_map[slot])
+                        if conflicting:
+                            continue
+
+                    # 3. Tránh làm xấu hơn chất lượng F2 bằng cách thêm ca cùng ngày khác cơ sở
+                    slot_day = day_by_slot[slot]
+                    slot_campus = campus_by_slot[slot]
+                    slot_shift = shift_order_by_slot[slot]
+                    conflict_quality = False
+                    for existing_slot in staff_to_slots[poor_staff]:
+                        if day_by_slot[existing_slot] != slot_day:
+                            continue
+                        if campus_by_slot[existing_slot] != slot_campus:
+                            conflict_quality = True
+                            break
+                        if abs(shift_order_by_slot[existing_slot] - slot_shift) == 1:
+                            conflict_quality = True
+                            break
+                    if conflict_quality:
                         continue
 
                     # === THỰC HIỆN CHUYỂN ===
+                    old_staff = chromosome[slot]
                     chromosome[slot] = poor_staff
-                    shift_counts[rich_staff] -= 1
+                    
+                    # Update staff→slots mapping 
+                    staff_to_slots[old_staff].remove(slot)
+                    staff_to_slots[poor_staff].append(slot)
+                    
+                    shift_counts[old_staff] -= 1
                     shift_counts[poor_staff] += 1
                     moved_in_iter += 1
                     break   # Chuyển xong 1 ca → thử slot tiếp theo của rich_staff

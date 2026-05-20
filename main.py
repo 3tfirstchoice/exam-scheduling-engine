@@ -4,7 +4,6 @@ from src.loader import load_data
 from src.model import run_nsga2_scheduler
 from src.exporter import export_results
 
-# Bỏ qua các cảnh báo không cần thiết từ pandas/numpy để console gọn gàng
 warnings.filterwarnings('ignore')
 
 def main():
