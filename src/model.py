@@ -459,10 +459,10 @@ class ExamSchedulingProblem(Problem):
             min_staff = np.minimum(staff_u, staff_v)
             max_staff = np.maximum(staff_u, staff_v)
 
-            # Hàm Băm (Hash): Ép mỗi cặp cán bộ thành 1 con số nguyên duy nhất
+            # Mã hóa mỗi cặp cán bộ thành chỉ số nguyên duy nhất để tính tần suất xuất hiện.
             pair_hash_id = min_staff * self.num_staff + max_staff
 
-            # Đếm penalty cho cặp gác chung lặp lại nhiều lần
+            # Tính penalty cho các cặp gác chung xuất hiện nhiều lần.
             f2_repeat_pair_penalty = np.zeros(pop_size, dtype=np.float32)
             for p_idx in range(pop_size):
                 unique_ids, counts = np.unique(pair_hash_id[p_idx], return_counts=True)
@@ -563,7 +563,7 @@ def run_nsga2_scheduler(
 
     is_feasible_solution = optimization_result.G.flatten() <= 0
 
-    # Không áp dụng Robin Hood cho nghiệm infeasible để giữ nguyên cấu trúc kết quả
+    # Tránh áp dụng Robin Hood khi không có nghiệm thỏa mãn ràng buộc cứng.
     if not np.any(is_feasible_solution):
         print(
             "\n[CẢNH BÁO] Không tìm được nghiệm thỏa mãn 100% ràng buộc cứng [RC1, RC10]!\n"
@@ -573,7 +573,7 @@ def run_nsga2_scheduler(
         candidate_chromosomes = optimization_result.X
         candidate_objectives  = optimization_result.F
         
-        # Chọn nghiệm ít rác nhất dù vẫn có rác
+        # Chọn nghiệm có giá trị mục tiêu tổng hợp tốt nhất trong số các nghiệm infeasible.
         weights = np.array([config.WEIGHT_FAIRNESS_F1, config.WEIGHT_QUALITY_F2, config.WEIGHT_WEEKEND_F3])
         obj_min, obj_max = candidate_objectives.min(axis=0), candidate_objectives.max(axis=0)
         obj_norm = (candidate_objectives - obj_min) / np.maximum(obj_max - obj_min, 1e-8)
@@ -583,7 +583,7 @@ def run_nsga2_scheduler(
         _print_final_summary(best_chromosome, is_feasible_solution, num_staff)
         return best_chromosome, slots_df
 
-    # Nếu Feasible, tiến hành bình thường
+    # Nếu tồn tại nghiệm feasible, tiếp tục lựa chọn và tinh chỉnh kết quả đó.
     candidate_chromosomes = optimization_result.X[is_feasible_solution]
     candidate_objectives  = optimization_result.F[is_feasible_solution]
     print(f"\n[OK] Tìm được {np.sum(is_feasible_solution)} nghiệm feasible.")
@@ -621,10 +621,10 @@ def _robin_hood_gap_reducer(
 ) -> np.ndarray:
     target_gap = config.ALLOWED_SHIFT_DEVIATION
     
-    #Dùng problem.conflict_map (pre-computed)
+    # Sử dụng bảng xung đột cứng đã được tiền xử lý.
     conflict_map = problem.conflict_map if hasattr(problem, 'conflict_map') else {}
 
-    # An toàn thuộc tính
+    # Lấy thuộc tính an toàn từ đối tượng bài toán để kiểm tra điều kiện bổ sung.
     staff_ages = getattr(problem, 'staff_ages', getattr(problem, 'staff_age', np.zeros(num_staff)))
     is_elderly = staff_ages > getattr(config, 'ELDERLY_AGE_THRESHOLD', 55)
     is_late = getattr(problem, 'is_late_shift', getattr(problem, 'is_late', np.zeros(num_slots, dtype=bool)))
@@ -635,7 +635,7 @@ def _robin_hood_gap_reducer(
 
     print(f"\n[Robin Hood] Bắt đầu tinh chỉnh Gap (mục tiêu ≤ {target_gap})...")
 
-    # Top-K động
+    # Xác định tập nhân viên dư và thiếu ca để cân bằng chênh lệch.
     k = max(3, min(8, num_staff // 8))
 
     # Tạo trước ánh xạ staff→slots để truy xuất nhanh trong vòng lặp cân bằng
@@ -644,7 +644,7 @@ def _robin_hood_gap_reducer(
         staff_to_slots[staff_idx].append(slot_idx)
 
     for iteration in range(max_iterations):
-        # Dùng bincount 1 lần rồi maintain thay vì tính lại
+        # Tính số ca của mỗi nhân viên một lần mỗi vòng lặp.
         shift_counts = np.bincount(chromosome, minlength=num_staff)
         current_gap = shift_counts.max() - shift_counts.min()
 
@@ -660,7 +660,7 @@ def _robin_hood_gap_reducer(
         for rich_staff in rich_indices:
             if moved_in_iter >= max_moves:
                 break
-            if shift_counts[rich_staff] <= 1:        # Bảo vệ không cướp hết
+            if shift_counts[rich_staff] <= 1:        # Bảo vệ nhân viên chỉ còn một ca
                 continue
 
             # Dùng pre-built mapping thay vì np.where()
@@ -682,7 +682,7 @@ def _robin_hood_gap_reducer(
                     if is_elderly[poor_staff] and is_late[slot]:
                         continue
 
-                    # 2. Kiểm tra hard conflict dùng pre-computed conflict_map
+                    # 2. Kiểm tra xung đột cứng với nhân viên đích sử dụng bảng tiền xử lý.
                     if slot in conflict_map:
                         conflicting = any(chromosome[c_slot] == poor_staff 
                                         for c_slot in conflict_map[slot])
