@@ -467,109 +467,87 @@ def run_nsga2_scheduler(
 # ═══════════════════════════════════════════════════════════════════
 
 def _robin_hood_gap_reducer(
-    chromosome : np.ndarray,
-    problem    : ExamSchedulingProblem,
-    num_slots  : int,
-    num_staff  : int,
+    chromosome: np.ndarray,
+    problem: ExamSchedulingProblem,
+    num_slots: int,
+    num_staff: int,
+    max_iterations: int = 800
 ) -> np.ndarray:
-    
-    target_gap   = config.ALLOWED_SHIFT_DEVIATION
-    ceiling_avg  = int(np.ceil(num_slots  / num_staff))
-    floor_avg    = int(np.floor(num_slots / num_staff))
-    conflict_arr = problem.hard_conflict_pairs
+    target_gap = config.ALLOWED_SHIFT_DEVIATION
+    conflict_map = getattr(problem, 'conflict_map', {})
 
-    # Lấy thông tin tuổi tác và ca muộn để Robin Hood tôn trọng RC6
-    is_elderly = problem.staff_age > config.ELDERLY_AGE_THRESHOLD
-    is_late    = problem.is_late_shift
+    # An toàn thuộc tính
+    staff_ages = getattr(problem, 'staff_ages', getattr(problem, 'staff_age', np.zeros(num_staff)))
+    is_elderly = staff_ages > getattr(config, 'ELDERLY_AGE_THRESHOLD', 55)
+    is_late = getattr(problem, 'is_late_shift', getattr(problem, 'is_late', np.zeros(num_slots, dtype=bool)))
 
     print(f"\n[Robin Hood] Bắt đầu tinh chỉnh Gap (mục tiêu ≤ {target_gap})...")
-    keep_iterating = True
 
-    while keep_iterating:
-        keep_iterating = False
+    # Top-K động
+    k = max(3, min(8, num_staff // 8))
+
+    for iteration in range(max_iterations):
         shift_counts = np.bincount(chromosome, minlength=num_staff)
-
         current_gap = shift_counts.max() - shift_counts.min()
+
         if current_gap <= target_gap:
-            break   
+            break
 
-        staff_ranked_rich_to_poor = np.argsort(shift_counts)[::-1]
-        staff_ranked_poor_to_rich = np.argsort(shift_counts)
+        rich_indices = np.argsort(shift_counts)[-k:][::-1]
+        poor_indices = np.argsort(shift_counts)[:k]
 
-        for rich_staff in staff_ranked_rich_to_poor:
-            if shift_counts[rich_staff] <= ceiling_avg:
-                continue   
+        moved_in_iter = 0
+        max_moves = max(1, min(5, current_gap // 2))
 
-            slots_of_rich_staff = np.where(chromosome == rich_staff)[0]
-
-            for poor_staff in staff_ranked_poor_to_rich:
-                if shift_counts[poor_staff] >= floor_avg + (target_gap - 1):
-                    continue   
-
-                for candidate_slot in slots_of_rich_staff:
-                    #Bảo vệ người già: Khước từ gán nếu đó là ca đêm
-                    if is_elderly[poor_staff] and is_late[candidate_slot]:
-                        continue
-                    
-                    if len(problem.same_shift_pairs) > 0:
-                        # 1. Tìm các slot đang diễn ra CÙNG CA với candidate_slot này
-                        mask_0 = problem.same_shift_pairs[:, 0] == candidate_slot
-                        mask_1 = problem.same_shift_pairs[:, 1] == candidate_slot
-                        partner_slots = np.concatenate([
-                            problem.same_shift_pairs[mask_0, 1],
-                            problem.same_shift_pairs[mask_1, 0]
-                        ])
-                        
-                        # 2. Lấy danh sách ID cán bộ (partners) đang gác ở các slot đó
-                        partners = chromosome[partner_slots]
-                        
-                        # 3. Quét xem poor_staff ĐÃ TỪNG gác chung với các partner này mấy lần rồi
-                        creates_pair_violation = False
-                        c1_arr = chromosome[problem.same_shift_pairs[:, 0]]
-                        c2_arr = chromosome[problem.same_shift_pairs[:, 1]]
-                        
-                        for partner in partners:
-                            overlap_count = np.sum(
-                                ((c1_arr == poor_staff) & (c2_arr == partner)) |
-                                ((c1_arr == partner) & (c2_arr == poor_staff))
-                            )
-                            # Nếu gán vào đây mà đụng mặt nhau từ lần thứ 2 trở lên -> Hủy kèo!
-                            if overlap_count >= 2:  
-                                creates_pair_violation = True
-                                break
-                                
-                        if creates_pair_violation:
-                            continue  # Bỏ qua slot này, Robin Hood đi tìm slot khác
-
-                    chromosome[candidate_slot] = poor_staff   
-
-                    related_conflicts = conflict_arr[
-                        (conflict_arr[:, 0] == candidate_slot) |
-                        (conflict_arr[:, 1] == candidate_slot)
-                    ]
-                    creates_hard_violation = any(
-                        chromosome[pair[1] if pair[0] == candidate_slot else pair[0]] == poor_staff
-                        for pair in related_conflicts
-                    )
-
-                    if not creates_hard_violation:
-                        keep_iterating = True   
-                        break
-                    else:
-                        chromosome[candidate_slot] = rich_staff   
-
-                if keep_iterating:
-                    break
-            if keep_iterating:
+        for rich_staff in rich_indices:
+            if moved_in_iter >= max_moves:
                 break
+            if shift_counts[rich_staff] <= 1:        # Bảo vệ không cướp hết
+                continue
+
+            slots_of_rich = np.where(chromosome == rich_staff)[0]
+            if slots_of_rich.size == 0:
+                continue
+
+            np.random.shuffle(slots_of_rich)
+
+            for slot in slots_of_rich:
+                if moved_in_iter >= max_moves:
+                    break
+
+                for poor_staff in poor_indices:
+                    if shift_counts[rich_staff] - shift_counts[poor_staff] <= target_gap:
+                        break
+
+                    # 1. Ràng buộc người già - ca muộn
+                    if is_elderly[poor_staff] and is_late[slot]:
+                        continue
+
+                    # 2. Kiểm tra hard conflict
+                    conflicting = any(chromosome[c_slot] == poor_staff 
+                                    for c_slot in conflict_map.get(slot, []))
+                    if conflicting:
+                        continue
+
+                    # === THỰC HIỆN CHUYỂN ===
+                    chromosome[slot] = poor_staff
+                    shift_counts[rich_staff] -= 1
+                    shift_counts[poor_staff] += 1
+                    moved_in_iter += 1
+                    break   # Chuyển xong 1 ca → thử slot tiếp theo của rich_staff
+
+        # Nếu iteration này không chuyển được ca nào → tối ưu cục bộ
+        if moved_in_iter == 0:
+            print(f"[Robin Hood] Đạt tối ưu cục bộ sau {iteration + 1} iterations.")
+            break
 
     final_counts = np.bincount(chromosome, minlength=num_staff)
-    print(
-        f"[Robin Hood] Hoàn tất — "
-        f"Gap cuối: {final_counts.max() - final_counts.min()} ca\n"
-    )
-    return chromosome
+    final_gap = final_counts.max() - final_counts.min()
 
+    print(f"[Robin Hood] Hoàn tất sau {iteration + 1} iterations. "
+          f"Gap cuối: {final_gap} | Max={final_counts.max()} | Min={final_counts.min()}")
+
+    return chromosome
 
 # ═══════════════════════════════════════════════════════════════════
 # PHẦN 4 ─ TIỆN ÍCH HỖ TRỢ
