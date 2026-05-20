@@ -35,12 +35,12 @@ OUTPUT_SCHEDULE_FILE = os.path.join(OUTPUT_DIR, "Ket_Qua_Xep_Lich.xlsx")
 # PHẦN 2 ─ CẤU HÌNH THUẬT TOÁN NSGA-II
 # ═══════════════════════════════════════════════════════════════════
 
-POPULATION_SIZE = 300   
-NUM_GENERATIONS = 1000  
+POPULATION_SIZE = 200   
+NUM_GENERATIONS = 900  
 MUTATION_RATE   = 0.45  
 RANDOM_SEED     = 42    
 
-ALLOWED_SHIFT_DEVIATION = 2
+ALLOWED_SHIFT_DEVIATION = 1
 ELDERLY_AGE_THRESHOLD = 45   
 
 

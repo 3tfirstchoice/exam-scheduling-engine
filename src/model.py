@@ -462,7 +462,7 @@ class ExamSchedulingProblem(Problem):
             # Hàm Băm (Hash): Ép mỗi cặp cán bộ thành 1 con số nguyên duy nhất
             pair_hash_id = min_staff * self.num_staff + max_staff
 
-            # Count repeated pair occurrences beyond the first shared shift
+            # Đếm penalty cho cặp gác chung lặp lại nhiều lần
             f2_repeat_pair_penalty = np.zeros(pop_size, dtype=np.float32)
             for p_idx in range(pop_size):
                 unique_ids, counts = np.unique(pair_hash_id[p_idx], return_counts=True)
@@ -563,7 +563,7 @@ def run_nsga2_scheduler(
 
     is_feasible_solution = optimization_result.G.flatten() <= 0
 
-    #Từ chối xử lý Robin Hood nếu nghiệm Infeasible để tránh sinh ra "Rác"
+    # Không áp dụng Robin Hood cho nghiệm infeasible để giữ nguyên cấu trúc kết quả
     if not np.any(is_feasible_solution):
         print(
             "\n[CẢNH BÁO] Không tìm được nghiệm thỏa mãn 100% ràng buộc cứng [RC1, RC10]!\n"
@@ -638,7 +638,7 @@ def _robin_hood_gap_reducer(
     # Top-K động
     k = max(3, min(8, num_staff // 8))
 
-    # Pre-build staff→slots mapping để tránh np.where() liên tục
+    # Tạo trước ánh xạ staff→slots để truy xuất nhanh trong vòng lặp cân bằng
     staff_to_slots = [[] for _ in range(num_staff)]
     for slot_idx, staff_idx in enumerate(chromosome):
         staff_to_slots[staff_idx].append(slot_idx)
@@ -689,7 +689,7 @@ def _robin_hood_gap_reducer(
                         if conflicting:
                             continue
 
-                    # 3. Tránh làm xấu hơn chất lượng F2 bằng cách thêm ca cùng ngày khác cơ sở
+                    # 3. Kiểm tra chuyển ca không tạo xung đột chất lượng cùng ngày
                     slot_day = day_by_slot[slot]
                     slot_campus = campus_by_slot[slot]
                     slot_shift = shift_order_by_slot[slot]
@@ -706,11 +706,11 @@ def _robin_hood_gap_reducer(
                     if conflict_quality:
                         continue
 
-                    # === THỰC HIỆN CHUYỂN ===
+                    # Thực hiện chuyển ca và cập nhật bản đồ staff→slots
                     old_staff = chromosome[slot]
                     chromosome[slot] = poor_staff
                     
-                    # Update staff→slots mapping 
+                    # Cập nhật bảng ánh xạ staff→slots sau khi chuyển ca
                     staff_to_slots[old_staff].remove(slot)
                     staff_to_slots[poor_staff].append(slot)
                     
